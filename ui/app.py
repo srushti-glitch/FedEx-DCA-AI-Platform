@@ -1,123 +1,193 @@
 import streamlit as st
 import pandas as pd
-import joblib
 import matplotlib.pyplot as plt
+from datetime import timedelta
 
 # -------------------------------------------------
-# PAGE CONFIG
+# Page Config
 # -------------------------------------------------
-st.set_page_config(page_title="FedEx DCA AI Platform", layout="wide")
-st.title("🚚 FedEx DCA AI Recovery Platform")
-
-# -------------------------------------------------
-# LOAD MODEL
-# -------------------------------------------------
-model = joblib.load("models/recovery_model.pkl")
-
-# -------------------------------------------------
-# FILE UPLOAD
-# -------------------------------------------------
-uploaded_file = st.file_uploader(
-    "Upload Overdue Accounts CSV",
-    type=["csv"]
+st.set_page_config(
+    page_title="FedEx DCA AI Dashboard",
+    layout="wide"
 )
 
-if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
+# -------------------------------------------------
+# Custom CSS (Professional Look)
+# -------------------------------------------------
+st.markdown("""
+<style>
+.metric-box {
+    padding: 20px;
+    border-radius: 12px;
+    background-color: #f5f7fa;
+    text-align: center;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+}
+.metric-title {
+    font-size: 16px;
+    color: #555;
+}
+.metric-value {
+    font-size: 26px;
+    font-weight: bold;
+    color: #111;
+}
+</style>
+""", unsafe_allow_html=True)
 
-    st.subheader("📄 Uploaded Data")
-    st.dataframe(df, use_container_width=True)
+# -------------------------------------------------
+# Title
+# -------------------------------------------------
+st.title("📦 FedEx Debt Collection AI Dashboard")
+st.caption("Centralized Recovery | SOP | SLA Monitoring | Risk Insights")
 
-    # -------------------------------------------------
-    # FEATURES (MUST MATCH TRAINING)
-    # -------------------------------------------------
-    feature_cols = [
-        "customer_type",
-        "region",
-        "past_defaults",
-        "overdue_days",
-        "amount_due"
-    ]
+# -------------------------------------------------
+# Load Data
+# -------------------------------------------------
+@st.cache_data
+def load_data():
+    return pd.read_csv("data/overdue_accounts.csv")
 
-    X = df[feature_cols]
+df = load_data()
 
-    # -------------------------------------------------
-    # ML PREDICTION
-    # -------------------------------------------------
-    df["recovery_probability"] = model.predict_proba(X)[:, 1]
+# -------------------------------------------------
+# SLA LOGIC (INLINE – NO OTHER FILE CHANGE)
+# -------------------------------------------------
+df["Assigned_Date"] = pd.to_datetime("today")
 
-    # -------------------------------------------------
-    # SOP RULES
-    # -------------------------------------------------
-    def get_next_action(days):
-        if days <= 7:
-            return "Call Customer"
-        elif days <= 15:
-            return "Send Reminder"
-        else:
-            return "Escalate to Legal"
+def get_sla_deadline(overdue_days, assigned_date):
+    if overdue_days <= 7:
+        return assigned_date + timedelta(days=2)
+    elif overdue_days <= 15:
+        return assigned_date + timedelta(days=3)
+    else:
+        return assigned_date + timedelta(days=1)
 
-    df["Next_Action"] = df["overdue_days"].apply(get_next_action)
+df["SLA_Deadline"] = df.apply(
+    lambda row: get_sla_deadline(row["overdue_days"], row["Assigned_Date"]),
+    axis=1
+)
 
-    # -------------------------------------------------
-    # SLA RULES
-    # -------------------------------------------------
-    def get_sla_deadline(days, assigned_date):
-        if days <= 7:
-            return assigned_date + pd.Timedelta(days=2)
-        elif days <= 15:
-            return assigned_date + pd.Timedelta(days=3)
-        else:
-            return assigned_date + pd.Timedelta(days=5)
+df["SLA_Breached"] = df["SLA_Deadline"] < pd.Timestamp.now()
 
-    def check_sla_breach(deadline):
-        return pd.Timestamp("today") > deadline
+# -------------------------------------------------
+# KPI SECTION
+# -------------------------------------------------
+st.subheader("🔑 Key Performance Indicators")
 
-    df["Assigned_Date"] = pd.to_datetime("today")
+total_amount = df["amount_due"].sum()
+overdue_amount = df[df["overdue_days"] > 0]["amount_due"].sum()
+recovered_amount = df[df["recovered"] == 1]["amount_due"].sum()
+recovery_rate = (recovered_amount / total_amount) * 100
+sla_breaches = df["SLA_Breached"].sum()
 
-    df["SLA_Deadline"] = df.apply(
-        lambda row: get_sla_deadline(row["overdue_days"], row["Assigned_Date"]),
-        axis=1
+c1, c2, c3, c4, c5 = st.columns(5)
+
+c1.markdown(f"""
+<div class="metric-box">
+<div class="metric-title">Total Receivable</div>
+<div class="metric-value">₹ {total_amount:,.0f}</div>
+</div>
+""", unsafe_allow_html=True)
+
+c2.markdown(f"""
+<div class="metric-box">
+<div class="metric-title">Overdue Amount</div>
+<div class="metric-value">₹ {overdue_amount:,.0f}</div>
+</div>
+""", unsafe_allow_html=True)
+
+c3.markdown(f"""
+<div class="metric-box">
+<div class="metric-title">Recovered Amount</div>
+<div class="metric-value">₹ {recovered_amount:,.0f}</div>
+</div>
+""", unsafe_allow_html=True)
+
+c4.markdown(f"""
+<div class="metric-box">
+<div class="metric-title">Recovery Rate</div>
+<div class="metric-value">{recovery_rate:.2f}%</div>
+</div>
+""", unsafe_allow_html=True)
+
+c5.markdown(f"""
+<div class="metric-box">
+<div class="metric-title">SLA Breaches</div>
+<div class="metric-value">{sla_breaches}</div>
+</div>
+""", unsafe_allow_html=True)
+
+st.divider()
+
+# -------------------------------------------------
+# CHARTS SECTION
+# -------------------------------------------------
+colA, colB = st.columns(2)
+
+with colA:
+    st.subheader("📈 Amount Due by Customer Type")
+    cust_chart = df.groupby("customer_type")["amount_due"].sum()
+
+    fig1, ax1 = plt.subplots()
+    cust_chart.plot(kind="bar", ax=ax1, color="#4F81BD")
+    ax1.set_ylabel("Amount Due")
+    ax1.set_xlabel("Customer Type")
+    st.pyplot(fig1)
+
+with colB:
+    st.subheader("⏰ SLA Breach Status")
+
+    sla_counts = df["SLA_Breached"].value_counts()
+
+    labels = ["Breached" if i else "Within SLA" for i in sla_counts.index]
+    colors = ["#e74c3c" if i else "#2ecc71" for i in sla_counts.index]
+
+    fig2, ax2 = plt.subplots()
+    ax2.pie(
+        sla_counts.values,
+        labels=labels,
+        autopct="%1.1f%%",
+        startangle=90,
+        colors=colors
     )
+    ax2.axis("equal")
+    st.pyplot(fig2)
 
-    df["SLA_Breached"] = df["SLA_Deadline"].apply(check_sla_breach)
+st.divider()
 
-    # -------------------------------------------------
-    # PRIORITY SCORE
-    # -------------------------------------------------
-    df["priority_score"] = (
-        0.4 * df["overdue_days"]
-        + 0.3 * df["amount_due"] / 1000
-        + 0.3 * (1 - df["recovery_probability"])
-    )
+# -------------------------------------------------
+# TABLE SECTION
+# -------------------------------------------------
+st.subheader("📋 Overdue Accounts with SLA Status")
 
-    # -------------------------------------------------
-    # FINAL TABLE
-    # -------------------------------------------------
-    st.subheader("🧠 AI Prioritized Recovery Cases")
+display_cols = [
+    "customer_id",
+    "customer_type",
+    "region",
+    "amount_due",
+    "overdue_days",
+    "SLA_Deadline",
+    "SLA_Breached"
+]
 
-    st.dataframe(
-        df.sort_values("priority_score", ascending=False),
-        use_container_width=True
-    )
+st.dataframe(df[display_cols], use_container_width=True)
 
-    # -------------------------------------------------
-    # DASHBOARD
-    # -------------------------------------------------
-    st.subheader("📊 Recovery Insights")
+# -------------------------------------------------
+# FILTER SECTION
+# -------------------------------------------------
+st.subheader("🚨 High Risk Accounts Filter")
 
-    col1, col2 = st.columns(2)
+risk_filter = st.slider(
+    "Show customers with overdue days greater than:",
+    min_value=0,
+    max_value=int(df["overdue_days"].max()),
+    value=30
+)
 
-    with col1:
-        fig1, ax1 = plt.subplots()
-        ax1.hist(df["recovery_probability"], bins=10)
-        ax1.set_title("Recovery Probability Distribution")
-        st.pyplot(fig1)
+filtered_df = df[df["overdue_days"] >= risk_filter]
 
-    with col2:
-        fig2, ax2 = plt.subplots()
-        ax2.hist(df["overdue_days"], bins=10)
-        ax2.set_title("Overdue Days Distribution")
-        st.pyplot(fig2)
-
-    st.success("✅ SOP, SLA & AI logic successfully applied")
+st.dataframe(
+    filtered_df[display_cols],
+    use_container_width=True
+)
